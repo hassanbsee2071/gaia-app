@@ -1,0 +1,47 @@
+set -e
+
+echo '[gaia] using image {{terraformImage}}'
+
+echo '[gaia] installing curl'
+apk -q add curl
+
+echo '[gaia] cloning {{gitRepositoryUrl}}' | awk '{ sub(/oauth2:(.*)@/, "oauth2:[MASKED]@");}1'
+git clone {{gitRepositoryUrl}} module
+
+cd module
+{{#gitDirectory}}
+    cd {{gitDirectory}}
+{{/gitDirectory}}
+
+echo '[gaia] generating backend configuration'
+echo 'terraform {
+    backend "http" {
+        address = "{{externalUrl}}/api/runner/state/{{stackId}}"
+        username = "{{stateApiUser}}"
+        password = "{{stateApiPassword}}"
+    }
+}' > backend.tf
+
+echo '[gaia] generating tfvars variable file'
+curl --silent --user {{stateApiUser}}:{{stateApiPassword}} {{externalUrl}}/api/runner/stacks/{{stackId}}.tfvars > gaia.auto.tfvars
+
+echo '[gaia] running terraform init'
+terraform version
+terraform init
+
+set +e
+echo '[gaia] running terraform job'
+{{&command}}
+set -e
+
+TERRAFORM_EXITCODE=$?
+
+{{#uploadPlan}}
+# for plans, we also convert them to JSON, and send them to the server
+echo '[gaia] analysing plan'
+terraform show -json plan.binary > plan.json
+curl --silent --user {{stateApiUser}}:{{stateApiPassword}} -X POST -H "Content-Type: application/json" --data "@plan.json" {{externalUrl}}/api/runner/stacks/{{stackId}}/jobs/{{jobId}}/plan
+{{/uploadPlan}}
+echo "Now I am waiting"
+sleep 90
+exit $TERRAFORM_EXITCODE
